@@ -18,6 +18,6 @@ dependencies = ["numpy"]
 [project.optional-dependencies]
 dev = ["pytest"]
 
-[tool.setuptools]
-package-dir = {"" = "src"}
-packages = ["azuraforge_core"]
+[tool.setuptools.packages.find]
+# "src" klasörünün içine bak ve tüm paketleri kendin bul.
+where = ["src"]
