@@ -1,4 +1,3 @@
-# ========== YENİ DOSYA: tests\azuraforge_core\test_tensor.py ==========
 import pytest
 import numpy as np
 

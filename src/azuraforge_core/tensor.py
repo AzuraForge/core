@@ -1,4 +1,3 @@
-# ========== GÜNCELLENECEK DOSYA: core/src/azuraforge_core/tensor.py ==========
 import os
 from typing import Callable, List, Optional, Set, Tuple, Union, Any, cast
 import numpy as np
