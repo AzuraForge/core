@@ -81,7 +81,7 @@ def test_dot_product_backward():
     assert np.allclose(a.grad, grad_a_manual)
     assert np.allclose(b.grad, grad_b_manual)
 
-@pytest.mark.skip(reason="ReLU backward logic needs review in Tensor")
+
 def test_relu_backward():
     """ReLU aktivasyonu için geri yayılımı test eder."""
     a = Tensor([-1, 0, 5], requires_grad=True)
