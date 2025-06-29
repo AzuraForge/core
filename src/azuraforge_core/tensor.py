@@ -68,7 +68,6 @@ class Tensor:
         out._backward = _backward
         return out
 
-    # ... (Diğer tüm metodlar aynı kalabilir, sadece __add__ ve __mul__ _unbroadcast_to kullanacak şekilde güncellendi)
     def __pow__(self, power: float) -> "Tensor":
         out = Tensor(self.data ** power, (self,), f"**{power}", self.requires_grad)
         def _backward():
@@ -106,6 +105,15 @@ class Tensor:
             if self.requires_grad: self.grad += (self.data > 0) * out.grad
         out._backward = _backward
         return out
+
+    # YENİ: Sigmoid aktivasyon fonksiyonu
+    def sigmoid(self) -> "Tensor":
+        s = 1 / (1 + xp.exp(-self.data))
+        out = Tensor(s, (self,), "Sigmoid", self.requires_grad)
+        def _backward():
+            if self.requires_grad: self.grad += out.data * (1 - out.data) * out.grad
+        out._backward = _backward
+        return out
         
     def __repr__(self): return f"Tensor(data={self.data}, requires_grad={self.requires_grad})"
     def __neg__(self): return self * -1
@@ -119,7 +127,6 @@ class Tensor:
 def _ensure_tensor(val: Any) -> "Tensor":
     return val if isinstance(val, Tensor) else Tensor(val)
 
-# --- YENİ VE SAĞLAM _unbroadcast_to FONKSİYONU ---
 def _unbroadcast_to(target_shape: Tuple[int, ...], grad: ArrayType) -> ArrayType:
     """Bir gradyanı, orijinal tensörün (yayınlamadan önceki) şekline geri küçültür."""
     if target_shape == grad.shape:
