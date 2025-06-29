@@ -106,12 +106,23 @@ class Tensor:
         out._backward = _backward
         return out
 
-    # YENİ: Sigmoid aktivasyon fonksiyonu
     def sigmoid(self) -> "Tensor":
         s = 1 / (1 + xp.exp(-self.data))
         out = Tensor(s, (self,), "Sigmoid", self.requires_grad)
         def _backward():
             if self.requires_grad: self.grad += out.data * (1 - out.data) * out.grad
+        out._backward = _backward
+        return out
+    
+    # YENİ: Tanh aktivasyon fonksiyonu
+    def tanh(self) -> "Tensor":
+        t = xp.tanh(self.data)
+        out = Tensor(t, (self,), "Tanh", self.requires_grad)
+        def _backward():
+            if self.requires_grad:
+                # Gradyan: (1 - tanh(x)^2) * grad_output
+                # t = tanh(self.data) olduğu için, (1 - t^2) kullanabiliriz.
+                self.grad += (1 - t**2) * out.grad
         out._backward = _backward
         return out
         
