@@ -1,6 +1,11 @@
 import os
-from typing import Callable, List, Optional, Set, Tuple, Union, Any, cast
+from typing import Callable, List, Optional, Set, Tuple, Union, Any
 import numpy as np
+import logging # Loglama için import et
+
+# === DEĞİŞİKLİK BURADA: Cihaz algılandığında logla ===
+# Loglamayı yapılandır
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - CORE - %(levelname)s - %(message)s')
 
 DEVICE = os.environ.get("AZURAFORGE_DEVICE", "cpu").lower()
 
@@ -9,13 +14,17 @@ if DEVICE == "gpu":
     try:
         import cupy
         xp = cupy
+        logging.info("✅ AzuraForge Core: CuPy (GPU) backend successfully loaded.")
     except ImportError:
         import numpy
         xp = numpy
+        logging.warning("⚠️ AzuraForge Core: AZURAFORGE_DEVICE set to 'gpu' but CuPy not found. Falling back to NumPy (CPU).")
         DEVICE = "cpu"
 else:
     import numpy
     xp = numpy
+    logging.info("ℹ️ AzuraForge Core: NumPy (CPU) backend is active.")
+# === DEĞİŞİKLİK SONU ===
 
 ArrayType = Any
 ScalarType = Union[int, float, bool, np.number, xp.number]
@@ -25,8 +34,16 @@ def _empty_backward_op() -> None: pass
 class Tensor:
     def __init__(self, data: Any, _children: Tuple["Tensor", ...] = (), _op: str = "", requires_grad: bool = False):
         if isinstance(data, Tensor): self.data = data.data.copy()
-        else: self.data = xp.array(data, dtype=np.float64)
-        
+        else: 
+            # Veriyi doğru cihaza taşı
+            try:
+                # Eğer xp, cupy ise bu veriyi GPU'ya taşır.
+                self.data = xp.array(data, dtype=np.float64)
+            except Exception as e:
+                # GPU'ya taşıma sırasında hata olursa (örn. CUDA context hatası) logla
+                logging.error(f"Error transferring data to device '{DEVICE}': {e}. Falling back to CPU.")
+                self.data = np.array(data, dtype=np.float64)
+
         self.requires_grad = requires_grad
         self.grad: Optional[ArrayType] = xp.zeros_like(self.data) if requires_grad else None
         self._backward: Callable[[], None] = _empty_backward_op
@@ -41,15 +58,12 @@ class Tensor:
             if v not in visited:
                 visited.add(v); [build_topo(child) for child in v._prev]; topo.append(v)
         build_topo(self)
-        # Gradyanları sıfırla
         for t in topo:
             if t.grad is not None:
                 t.grad.fill(0.0)
         
-        # Bu tensörün gradyanını başlat
         self.grad = xp.ones_like(self.data) if grad_output is None else xp.asarray(grad_output, dtype=np.float64).reshape(self.data.shape)
         
-        # Topolojik sırayla geriye doğru git
         for v in reversed(topo):
             v._backward()
 
@@ -122,7 +136,6 @@ class Tensor:
         out._backward = _backward
         return out
     
-    # DÜZELTME: Tanh'a tam bir backward pass eklendi.
     def tanh(self) -> "Tensor":
         t = xp.tanh(self.data)
         out = Tensor(t, (self,), "Tanh", self.requires_grad)
@@ -154,7 +167,7 @@ def _unbroadcast_to(target_shape: Tuple[int, ...], grad: ArrayType) -> ArrayType
 
     axes_to_sum = []
     for i, dim in enumerate(target_shape):
-        if dim == 1 and grad.shape[i] > 1: # İkinci koşul önemli
+        if dim == 1 and grad.shape[i] > 1:
             axes_to_sum.append(i)
     
     if axes_to_sum:
