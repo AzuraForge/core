@@ -154,6 +154,15 @@ class Tensor:
     def __rsub__(self, other): return _ensure_tensor(other) - self
     def __rtruediv__(self, other): return _ensure_tensor(other) / self
 
+    def sqrt(self) -> "Tensor":
+        out = Tensor(xp.sqrt(self.data), (self,), "sqrt", self.requires_grad)
+        def _backward():
+            if self.requires_grad and self.grad is not None:
+                # Derivative of sqrt(x) is 1 / (2 * sqrt(x))
+                self.grad += (0.5 / xp.sqrt(self.data)) * out.grad
+        out._backward = _backward
+        return out
+        
 def _ensure_tensor(val: Any) -> "Tensor":
     return val if isinstance(val, Tensor) else Tensor(val)
 
