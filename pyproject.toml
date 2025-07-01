@@ -6,11 +6,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "azuraforge-core"
-version = "0.2.0"
+version = "0.1.0" # İLK VERSİYON: Bu, ilk otomatik etiketi belirleyecek
 authors = [{ name = "Azmi Sahin" }]
 description = "The core automatic differentiation engine (Tensor object) for the AzuraForge ecosystem."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 classifiers = ["Programming Language :: Python :: 3"]
 dependencies = ["numpy", "python-semantic-release"]
@@ -22,5 +22,5 @@ dev = ["pytest"]
 branch = "main"
 version_variable = "pyproject.toml:project.version"
 upload_to_pypi = false
-major_on_zero = false
+major_on_zero = false # 0.x.x versiyonlarında 'feat' için minor artışı sürdür
 changelog_file = "CHANGELOG.md"
