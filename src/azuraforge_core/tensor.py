@@ -1,11 +1,9 @@
 import os
 from typing import Callable, List, Optional, Set, Tuple, Union, Any
 import numpy as np
-import logging # Loglama için import et
+import logging
 
-# === DÜZELTME: Cihaz algılandığında logla (GLOBAL LOGGING BASICCONFIG KALDIRILDI) ===
-# Global basicConfig yerine modüle özel logger kullanıyoruz.
-logger = logging.getLogger(__name__) # <--- Yeni satır
+logger = logging.getLogger(__name__)
 
 DEVICE = os.environ.get("AZURAFORGE_DEVICE", "cpu").lower()
 
@@ -14,17 +12,16 @@ if DEVICE == "gpu":
     try:
         import cupy
         xp = cupy
-        logger.info("✅ AzuraForge Core: CuPy (GPU) backend successfully loaded.") # <--- logging.info -> logger.info
+        logger.info("✅ AzuraForge Core: CuPy (GPU) backend successfully loaded.")
     except ImportError:
         import numpy
         xp = numpy
-        logger.warning("⚠️ AzuraForge Core: AZURAFORGE_DEVICE set to 'gpu' but CuPy not found. Falling back to NumPy (CPU).") # <--- logging.warning -> logger.warning
+        logger.warning("⚠️ AzuraForge Core: AZURAFORGE_DEVICE set to 'gpu' but CuPy not found. Falling back to NumPy (CPU).")
         DEVICE = "cpu"
 else:
     import numpy
     xp = numpy
-    logger.info("ℹ️ AzuraForge Core: NumPy (CPU) backend is active.") # <--- logging.info -> logger.info
-# === DÜZELTME SONU ===
+    logger.info("ℹ️ AzuraForge Core: NumPy (CPU) backend is active.")
 
 ArrayType = Any
 ScalarType = Union[int, float, bool, np.number, xp.number]
@@ -35,14 +32,12 @@ class Tensor:
     def __init__(self, data: Any, _children: Tuple["Tensor", ...] = (), _op: str = "", requires_grad: bool = False):
         if isinstance(data, Tensor): self.data = data.data.copy()
         else: 
-            # Veriyi doğru cihaza taşı
             try:
-                # Eğer xp, cupy ise bu veriyi GPU'ya taşır.
-                self.data = xp.array(data, dtype=np.float64)
+                # KRİTİK DÜZELTME: Veri tipini xp.float32 olarak ayarlayın ve xp.array kullanın.
+                self.data = xp.array(data, dtype=xp.float32) # <--- BU SATIR DEĞİŞTİ!
             except Exception as e:
-                # GPU'ya taşıma sırasında hata olursa (örn. CUDA context hatası) logla
                 logger.error(f"Error transferring data to device '{DEVICE}': {e}. Falling back to CPU.")
-                self.data = np.array(data, dtype=np.float64)
+                self.data = np.array(data, dtype=np.float32) # <--- CPU'ya dönüşte de float32 kullanın
 
         self.requires_grad = requires_grad
         self.grad: Optional[ArrayType] = xp.zeros_like(self.data) if requires_grad else None
@@ -62,7 +57,8 @@ class Tensor:
             if t.grad is not None:
                 t.grad.fill(0.0)
         
-        self.grad = xp.ones_like(self.data) if grad_output is None else xp.asarray(grad_output, dtype=np.float64).reshape(self.data.shape)
+        # KRİTİK DÜZELTME: grad_output'u da xp.float32 olarak kabul edin
+        self.grad = xp.ones_like(self.data) if grad_output is None else xp.asarray(grad_output, dtype=xp.float32).reshape(self.data.shape) # <--- BU SATIR DEĞİŞTİ!
         
         for v in reversed(topo):
             v._backward()
