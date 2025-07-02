@@ -3,9 +3,9 @@ from typing import Callable, List, Optional, Set, Tuple, Union, Any
 import numpy as np
 import logging # Loglama için import et
 
-# === DEĞİŞİKLİK BURADA: Cihaz algılandığında logla ===
-# Loglamayı yapılandır
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - CORE - %(levelname)s - %(message)s')
+# === DÜZELTME: Cihaz algılandığında logla (GLOBAL LOGGING BASICCONFIG KALDIRILDI) ===
+# Global basicConfig yerine modüle özel logger kullanıyoruz.
+logger = logging.getLogger(__name__) # <--- Yeni satır
 
 DEVICE = os.environ.get("AZURAFORGE_DEVICE", "cpu").lower()
 
@@ -14,17 +14,17 @@ if DEVICE == "gpu":
     try:
         import cupy
         xp = cupy
-        logging.info("✅ AzuraForge Core: CuPy (GPU) backend successfully loaded.")
+        logger.info("✅ AzuraForge Core: CuPy (GPU) backend successfully loaded.") # <--- logging.info -> logger.info
     except ImportError:
         import numpy
         xp = numpy
-        logging.warning("⚠️ AzuraForge Core: AZURAFORGE_DEVICE set to 'gpu' but CuPy not found. Falling back to NumPy (CPU).")
+        logger.warning("⚠️ AzuraForge Core: AZURAFORGE_DEVICE set to 'gpu' but CuPy not found. Falling back to NumPy (CPU).") # <--- logging.warning -> logger.warning
         DEVICE = "cpu"
 else:
     import numpy
     xp = numpy
-    logging.info("ℹ️ AzuraForge Core: NumPy (CPU) backend is active.")
-# === DEĞİŞİKLİK SONU ===
+    logger.info("ℹ️ AzuraForge Core: NumPy (CPU) backend is active.") # <--- logging.info -> logger.info
+# === DÜZELTME SONU ===
 
 ArrayType = Any
 ScalarType = Union[int, float, bool, np.number, xp.number]
@@ -41,7 +41,7 @@ class Tensor:
                 self.data = xp.array(data, dtype=np.float64)
             except Exception as e:
                 # GPU'ya taşıma sırasında hata olursa (örn. CUDA context hatası) logla
-                logging.error(f"Error transferring data to device '{DEVICE}': {e}. Falling back to CPU.")
+                logger.error(f"Error transferring data to device '{DEVICE}': {e}. Falling back to CPU.")
                 self.data = np.array(data, dtype=np.float64)
 
         self.requires_grad = requires_grad
