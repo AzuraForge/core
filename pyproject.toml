@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "azuraforge-core"
-version = "0.1.0" # BURADA KONTROL EDİN: Mutlaka "0.1.0" olsun
+version = "0.1.1"
 authors = [{ name = "Azmi Sahin" }]
 description = "The core automatic differentiation engine (Tensor object) for the AzuraForge ecosystem."
 readme = "README.md"
