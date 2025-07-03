@@ -254,6 +254,39 @@ class Tensor:
     def __rsub__(self, other): return _ensure_tensor(other) - self
     def __rtruediv__(self, other): return _ensure_tensor(other) / self
 
+    def transpose(self, *dims) -> "Tensor":
+        """Tensörün boyutlarını yeniden sıralar (transpose)."""
+        out = Tensor(self.data.transpose(*dims), _children=(self,), _op=f"T{dims}", requires_grad=self.requires_grad)
+        
+        def _backward():
+            if self.requires_grad and self.grad is not None:
+                # Gradyanın transpose'u, orijinal transpose'un tersidir.
+                # Örn: (0, 2, 1) -> (0, 2, 1)
+                # Orijinal sırayı bulmak için bir argüman sıralaması gerekir.
+                inv_dims = np.argsort(dims)
+                self.grad += out.grad.transpose(*inv_dims)
+        
+        out._backward = _backward
+        return out
+
+    def softmax(self, axis=-1) -> "Tensor":
+        """Softmax aktivasyon fonksiyonu."""
+        # Sayısal stabilite için en büyük değer çıkarılır
+        e_x = xp.exp(self.data - xp.max(self.data, axis=axis, keepdims=True))
+        out_data = e_x / xp.sum(e_x, axis=axis, keepdims=True)
+        out = Tensor(out_data, _children=(self,), _op="softmax", requires_grad=self.requires_grad)
+
+        def _backward():
+            if self.requires_grad and self.grad is not None:
+                # Softmax'in gradyanı: s(x) * (grad - (grad . s(x)))
+                # Bu, jacobian matrisinin gradyan vektörüyle çarpımının basitleştirilmiş halidir.
+                s = out.data
+                grad_s = out.grad
+                self.grad += s * (grad_s - xp.sum(grad_s * s, axis=axis, keepdims=True))
+
+        out._backward = _backward
+        return out
+        
 def _ensure_tensor(val: Any) -> "Tensor":
     return val if isinstance(val, Tensor) else Tensor(val)
 
