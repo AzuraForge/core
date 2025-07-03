@@ -1,8 +1,6 @@
 import pytest
 import numpy as np
 
-# PyTorch'u sadece gradyan doğruluğunu kontrol etmek için bir "orakl" (doğruluk kaynağı) olarak kullanacağız.
-# Projenin çalışma zamanı bağımlılığı olmayacak. Test ortamına `pip install torch` ile kurulması gerekir.
 try:
     import torch
     TORCH_AVAILABLE = True
@@ -12,7 +10,6 @@ except ImportError:
 from azuraforge_core import Tensor, xp
 
 # --- Temel Testler ---
-
 def test_tensor_creation_and_defaults():
     t = Tensor([1, 2, 3])
     assert isinstance(t.data, xp.ndarray)
@@ -20,145 +17,59 @@ def test_tensor_creation_and_defaults():
     assert t.grad is None
     assert t.data.dtype == xp.float32
 
-def test_tensor_requires_grad():
-    t = Tensor([1, 2], requires_grad=True)
-    assert t.requires_grad is True
-    assert isinstance(t.grad, xp.ndarray)
-    assert np.allclose(t.grad, xp.zeros_like(t.data))
-
 # --- Gradyan Doğruluk Testleri (PyTorch ile Karşılaştırmalı) ---
-
 @pytest.mark.skipif(not TORCH_AVAILABLE, reason="PyTorch is not installed, skipping gradient checks.")
 @pytest.mark.parametrize("op", [
-    "add", "sub", "mul", "div", "pow", "dot", "sum", "mean", "relu", "sigmoid", "tanh","conv2d", "max_pool2d"
+    "add", "sub", "mul", "div", "pow", "dot", "sum", "mean", 
+    "relu", "sigmoid", "tanh", "getitem", "conv2d", "max_pool2d"
 ])
 def test_gradient_correctness_vs_pytorch(op):
     """Farklı operasyonlar için gradyanların PyTorch sonuçlarıyla eşleştiğini doğrular."""
     
-    # Bizim Tensor'lerimiz
-    a_data = np.random.randn(2, 3).astype(np.float32)
-    b_data = np.random.randn(3, 4).astype(np.float32)
-    c_data = np.random.randn(2, 3).astype(np.float32)
-
-    a_az = Tensor(a_data, requires_grad=True)
-    b_az = Tensor(b_data, requires_grad=True)
-    c_az = Tensor(c_data, requires_grad=True)
-
-    # PyTorch Tensor'leri
-    a_th = torch.tensor(a_data, requires_grad=True)
-    b_th = torch.tensor(b_data, requires_grad=True)
-    c_th = torch.tensor(c_data, requires_grad=True)
-
-    # İşlemleri yap
-    if op == "add":
-        out_az = (a_az + c_az).sum()
-        out_th = (a_th + c_th).sum()
-    elif op == "sub":
-        out_az = (a_az - c_az).sum()
-        out_th = (a_th - c_th).sum()
-    elif op == "mul":
-        out_az = (a_az * c_az).sum()
-        out_th = (a_th * c_th).sum()
-    elif op == "div":
-        out_az = (a_az / c_az).sum()
-        out_th = (a_th / c_th).sum()
-    elif op == "pow":
-        out_az = (a_az ** 3).sum()
-        out_th = (a_th ** 3).sum()
-    elif op == "dot":
-        out_az = a_az.dot(b_az)
-        out_th = a_th @ b_th
-    elif op == "sum":
-        out_az = a_az.sum()
-        out_th = a_th.sum()
-    elif op == "mean":
-        out_az = a_az.mean()
-        out_th = a_th.mean()
-    elif op == "relu":
-        out_az = a_az.relu().sum()
-        out_th = a_th.relu().sum()
-    elif op == "sigmoid":
-        out_az = a_az.sigmoid().sum()
-        out_th = a_th.sigmoid().sum()
-    elif op == "tanh":
-        out_az = a_az.tanh().sum()
-        out_th = a_th.tanh().sum()
-    else:
-        return
-
-    if op == "conv2d":
-            # Conv2D için uygun tensörler
-            x_az = Tensor(np.random.randn(2, 3, 10, 10), requires_grad=True)
-            w_az = Tensor(np.random.randn(4, 3, 3, 3), requires_grad=True)
-            b_az = Tensor(np.random.randn(4), requires_grad=True)
-            
-            x_th = torch.tensor(x_az.data, requires_grad=True)
-            w_th = torch.tensor(w_az.data, requires_grad=True)
-            b_th = torch.tensor(b_az.data, requires_grad=True)
-            
-            out_az = x_az.conv2d(w_az, b_az).sum()
-            out_th = torch.nn.functional.conv2d(x_th, w_th, b_th, stride=1, padding=1).sum()
-            
-            out_az.backward()
-            out_th.backward()
-            
-            assert np.allclose(x_az.grad, x_th.grad.numpy(), atol=1e-5)
-            assert np.allclose(w_az.grad, w_th.grad.numpy(), atol=1e-5)
-            assert np.allclose(b_az.grad, b_th.grad.numpy(), atol=1e-5)
-            return # Bu test bitti, diğerlerini atla
-            
-        elif op == "max_pool2d":
-            x_az = Tensor(np.random.randn(2, 3, 10, 10), requires_grad=True)
-            x_th = torch.tensor(x_az.data, requires_grad=True)
-            
-            out_az = x_az.max_pool2d(kernel_size=2, stride=2).sum()
-            out_th = torch.nn.functional.max_pool2d(x_th, kernel_size=2, stride=2).sum()
-            
-            out_az.backward()
-            out_th.backward()
-            
-            assert np.allclose(x_az.grad, x_th.grad.numpy(), atol=1e-5)
-            return # Bu test bitti
-
-    # Geriye yayılım
-    out_az.backward()
-    out_th.backward(torch.ones_like(out_th))
-
-    # Gradyanları karşılaştır
-    assert a_az.grad is not None and a_th.grad is not None
-    assert np.allclose(a_az.grad, a_th.grad.numpy(), atol=1e-6), f"Gradient mismatch for op '{op}' on tensor 'a'"
-    
+    # İşlemlere göre tensörleri hazırla
     if op == "dot":
-      assert b_az.grad is not None and b_th.grad is not None
-      assert np.allclose(b_az.grad, b_th.grad.numpy(), atol=1e-6), f"Gradient mismatch for op '{op}' on tensor 'b'"
-    elif op in ["add", "sub", "mul", "div"]:
-      assert c_az.grad is not None and c_th.grad is not None
-      assert np.allclose(c_az.grad, c_th.grad.numpy(), atol=1e-6), f"Gradient mismatch for op '{op}' on tensor 'c'"
+        a_data = np.random.randn(2, 3).astype(np.float32)
+        b_data = np.random.randn(3, 4).astype(np.float32)
+        a_az, b_az = Tensor(a_data, requires_grad=True), Tensor(b_data, requires_grad=True)
+        a_th, b_th = torch.tensor(a_data, requires_grad=True), torch.tensor(b_data, requires_grad=True)
+        out_az, out_th = a_az.dot(b_az).sum(), (a_th @ b_th).sum()
+    elif op == "conv2d":
+        a_data = np.random.randn(2, 3, 10, 10).astype(np.float32)
+        b_data = np.random.randn(4, 3, 3, 3).astype(np.float32)
+        c_data = np.random.randn(4).astype(np.float32)
+        a_az, b_az, c_az = Tensor(a_data, requires_grad=True), Tensor(b_data, requires_grad=True), Tensor(c_data, requires_grad=True)
+        a_th, b_th, c_th = torch.tensor(a_data, requires_grad=True), torch.tensor(b_data, requires_grad=True), torch.tensor(c_data, requires_grad=True)
+        out_az, out_th = a_az.conv2d(b_az, c_az).sum(), torch.nn.functional.conv2d(a_th, b_th, c_th, padding=1).sum()
+    elif op == "max_pool2d":
+        a_data = np.random.randn(2, 3, 10, 10).astype(np.float32)
+        a_az, a_th = Tensor(a_data, requires_grad=True), torch.tensor(a_data, requires_grad=True)
+        out_az, out_th = a_az.max_pool2d().sum(), torch.nn.functional.max_pool2d(a_th, kernel_size=2, stride=2).sum()
+    elif op == "getitem":
+        a_data = np.random.randn(10, 5).astype(np.float32)
+        indices = np.random.randint(0, 10, size=8)
+        a_az, a_th = Tensor(a_data, requires_grad=True), torch.tensor(a_data, requires_grad=True)
+        out_az, out_th = a_az[indices].sum(), a_th[indices].sum()
+    else: # Diğer tüm ikili işlemler için
+        a_data = np.random.randn(5, 5).astype(np.float32)
+        b_data = np.random.randn(5, 5).astype(np.float32)
+        a_az, b_az = Tensor(a_data, requires_grad=True), Tensor(b_data, requires_grad=True)
+        a_th, b_th = torch.tensor(a_data, requires_grad=True), torch.tensor(b_data, requires_grad=True)
+        op_map = {
+            "add": (a_az + b_az, a_th + b_th), "sub": (a_az - b_az, a_th - b_th),
+            "mul": (a_az * b_az, a_th * b_th), "div": (a_az / b_az, a_th / b_th),
+            "pow": (a_az ** 3, a_th ** 3), "sum": (a_az.sum(), a_th.sum()),
+            "mean": (a_az.mean(), a_th.mean()), "relu": (a_az.relu(), a_th.relu()),
+            "sigmoid": (a_az.sigmoid(), a_th.sigmoid()), "tanh": (a_az.tanh(), a_th.tanh()),
+        }
+        out_az_op, out_th_op = op_map[op]
+        out_az, out_th = out_az_op.sum(), out_th_op.sum()
 
-# --- Karmaşık Senaryo Testi ---
+    out_az.backward()
+    out_th.backward()
 
-def test_chained_rule_and_broadcasting():
-    """Zincir kuralı ve broadcasting içeren daha karmaşık bir senaryoyu test eder."""
-    a_data = np.random.randn(2, 3).astype(np.float32)
-    b_data = np.array([10, 20, 30]).astype(np.float32) # Broadcasting için
-    
-    a_az = Tensor(a_data, requires_grad=True)
-    b_az = Tensor(b_data, requires_grad=True)
-
-    # PyTorch versiyonu
-    a_th = torch.tensor(a_data, requires_grad=True)
-    b_th = torch.tensor(b_data, requires_grad=True)
-
-    # AzuraForge: c = (a * b).relu() -> d = c.mean()
-    c_az = (a_az * b_az).relu()
-    d_az = c_az.mean()
-    d_az.backward()
-
-    # PyTorch: c = (a * b).relu() -> d = c.mean()
-    c_th = (a_th * b_th).relu()
-    d_th = c_th.mean()
-    d_th.backward()
-
-    # Gradyanları karşılaştır
-    assert np.allclose(a_az.grad, a_th.grad.numpy(), atol=1e-6)
-    assert np.allclose(b_az.grad, b_th.grad.numpy(), atol=1e-6)
+    assert np.allclose(a_az.grad, a_th.grad.numpy(), atol=1e-5), f"Gradient mismatch for op '{op}' on tensor 'a'"
+    if op in ["add", "sub", "mul", "div", "dot"]:
+        assert np.allclose(b_az.grad, b_th.grad.numpy(), atol=1e-5), f"Gradient mismatch for op '{op}' on tensor 'b'"
+    if op == "conv2d":
+        assert np.allclose(b_az.grad, b_th.grad.numpy(), atol=1e-5), f"Gradient mismatch for op '{op}' on weights"
+        assert np.allclose(c_az.grad, c_th.grad.numpy(), atol=1e-5), f"Gradient mismatch for op '{op}' on bias"

@@ -52,31 +52,23 @@ def im2col_indices(x, field_height, field_width, padding=1, stride=1):
     return cols
 
 def col2im_indices(cols, x_shape, field_height=3, field_width=3, padding=1, stride=1):
-    """
-    im2col işleminin tersini uygular. Sütun matrisini görüntü formatına dönüştürür.
-    """
+    """im2col işleminin tersini uygular."""
     N, C, H, W = x_shape
     H_padded, W_padded = H + 2 * padding, W + 2 * padding
     x_padded = xp.zeros((N, C, H_padded, W_padded), dtype=cols.dtype)
-    
     k, i, j = get_im2col_indices(x_shape, field_height, field_width, padding, stride)
-    
     cols_reshaped = cols.reshape(C * field_height * field_width, -1, N)
     cols_reshaped = cols_reshaped.transpose(2, 0, 1)
-    
     xp.add.at(x_padded, (slice(None), k, i, j), cols_reshaped)
+    if padding == 0: return x_padded
+    return x_padded[:, :, padding:-padding, padding:-padding]
     
-    if padding == 0:
-        return x_padded
-    return x_padded[:, :, padding:-padding, padding:-padding]    
-
 class Tensor:
     # ... (__init__ ve diğer metodlar aynı kalıyor) ...
     def __init__(self, data: Any, _children: Tuple["Tensor", ...] = (), _op: str = "", requires_grad: bool = False):
         if isinstance(data, Tensor): self.data = data.data.copy()
         else: 
-            try:
-                self.data = xp.array(data, dtype=xp.float32)
+            try: self.data = xp.array(data, dtype=xp.float32)
             except Exception as e:
                 logger.error(f"Error transferring data to device '{DEVICE}': {e}. Falling back to CPU.")
                 self.data = np.array(data, dtype=np.float32)
@@ -86,28 +78,32 @@ class Tensor:
         self._prev: Set["Tensor"] = set(_children)
         self._op: str = _op
 
-    def __getitem__(self, indices) -> "Tensor":
-        """Dizi indeksleme (slicing, integer array indexing) için kullanılır."""
-        out_data = self.data[indices]
-        out = Tensor(out_data, _children=(self,), _op=f"[{indices}]", requires_grad=self.requires_grad)
-   
     def backward(self, grad_output: Optional[ArrayType] = None) -> None:
-            if not self.requires_grad: return
-            topo: List[Tensor] = []
-            visited: Set[Tensor] = set()
-            def build_topo(v):
-                if v not in visited:
-                    visited.add(v); [build_topo(child) for child in v._prev]; topo.append(v)
-            build_topo(self)
-            for t in topo:
-                if t.grad is not None: t.grad.fill(0.0)
-            self.grad = xp.ones_like(self.data) if grad_output is None else xp.asarray(grad_output, dtype=xp.float32).reshape(self.data.shape)
-            for v in reversed(topo):
-                v._backward()
+        if not self.requires_grad: return
+        topo: List[Tensor] = []
+        visited: Set[Tensor] = set()
+        def build_topo(v):
+            if v not in visited:
+                visited.add(v); [build_topo(child) for child in v._prev]; topo.append(v)
+        build_topo(self)
+        for t in topo:
+            if t.grad is not None: t.grad.fill(0.0)
+        self.grad = xp.ones_like(self.data) if grad_output is None else xp.asarray(grad_output, dtype=xp.float32).reshape(self.data.shape)
+        for v in reversed(topo):
+            v._backward()
 
     def to_cpu(self) -> np.ndarray:
         if hasattr(self.data, 'get'): return self.data.get()
         return np.array(self.data, copy=True)
+
+    def __getitem__(self, indices) -> "Tensor":
+        out_data = self.data[indices]
+        out = Tensor(out_data, _children=(self,), _op=f"[{indices}]", requires_grad=self.requires_grad)
+        def _backward():
+            if self.requires_grad and self.grad is not None:
+                xp.add.at(self.grad, indices, out.grad)
+        out._backward = _backward
+        return out
 
     def __add__(self, other: Any) -> "Tensor":
         other = _ensure_tensor(other)
@@ -191,10 +187,12 @@ class Tensor:
     def conv2d(self, weights: "Tensor", bias: "Tensor", stride: int = 1, padding: int = 1) -> "Tensor":
         N, C, H, W = self.data.shape
         F, _, HH, WW = weights.data.shape
-        H_out, W_out = (H + 2*padding - HH)//stride + 1, (W + 2*padding - WW)//stride + 1
+        H_out = (H + 2 * padding - HH) // stride + 1
+        W_out = (W + 2 * padding - WW) // stride + 1
         
         x_col = im2col_indices(self.data, HH, WW, padding, stride)
         w_row = weights.data.reshape(F, -1)
+        
         out_data = w_row @ x_col + bias.data.reshape(-1, 1)
         out_data = out_data.reshape(F, H_out, W_out, N).transpose(3, 0, 1, 2)
         
@@ -203,23 +201,17 @@ class Tensor:
         def _backward():
             if not out.requires_grad or out.grad is None: return
 
-            # Bias gradyanı: Çıktı gradyanının her bir filtre için toplamı
             if bias.requires_grad and bias.grad is not None:
                 bias.grad += xp.sum(out.grad, axis=(0, 2, 3))
 
-            # Ağırlık (weights) gradyanı
             if weights.requires_grad and weights.grad is not None:
-                # Çıktı gradyanını ve girdi sütunlarını uygun şekle getir
                 db_reshaped = out.grad.transpose(1, 2, 3, 0).reshape(F, -1)
                 dw = db_reshaped @ x_col.T
                 weights.grad += dw.reshape(weights.data.shape)
 
-            # Girdi (self) gradyanı
             if self.requires_grad and self.grad is not None:
-                # Çıktı gradyanını ve ağırlıkları uygun şekle getir
                 dout_reshaped = out.grad.transpose(1, 2, 3, 0).reshape(F, -1)
                 dx_col = w_row.T @ dout_reshaped
-                # Gradyanları col2im ile orijinal görüntü şekline geri dağıt
                 self.grad += col2im_indices(dx_col, self.data.shape, HH, WW, padding, stride)
 
         out._backward = _backward
@@ -228,7 +220,8 @@ class Tensor:
     def max_pool2d(self, kernel_size: int = 2, stride: int = 2) -> "Tensor":
         N, C, H, W = self.data.shape
         HH, WW = kernel_size, kernel_size
-        H_out, W_out = (H - HH) // stride + 1, (W - WW) // stride + 1
+        H_out = (H - HH) // stride + 1
+        W_out = (W - WW) // stride + 1
 
         x_reshaped = self.data.reshape(N * C, 1, H, W)
         x_col = im2col_indices(x_reshaped, HH, WW, padding=0, stride=stride)
@@ -241,27 +234,17 @@ class Tensor:
         def _backward():
             if not out.requires_grad or out.grad is None: return
             
-            # Geriye yayılım için, maksimum değerin nereden geldiğini bulmamız gerekir.
             x_col_max_val_indices = xp.argmax(x_col, axis=0)
-            
-            # Gradyanları tutacak bir matris oluştur
             dx_col = xp.zeros_like(x_col)
-            
-            # Çıktı gradyanını uygun şekle getir
             dout_flat = out.grad.transpose(2, 3, 0, 1).ravel()
-            
-            # Sadece maksimum değerin geldiği piksellere gradyanı ekle
             dx_col[x_col_max_val_indices, range(dout_flat.size)] = dout_flat
             
-            # Gradyanları col2im ile orijinal görüntü şekline geri dağıt
             dx = col2im_indices(dx_col, x_reshaped.shape, HH, WW, padding=0, stride=stride)
             self.grad += dx.reshape(self.data.shape)
 
         out._backward = _backward
         return out
         
-        # Şimdilik sadece forward pass, backward daha sonra eklenecek
-        return Tensor(out, _children=(self,), _op="max_pool2d")
     def __repr__(self): return f"Tensor(data={self.data}, requires_grad={self.requires_grad})"
     def __neg__(self): return self * -1
     def __sub__(self, other): return self + (-other)
