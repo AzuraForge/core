@@ -30,7 +30,7 @@ def test_tensor_requires_grad():
 
 @pytest.mark.skipif(not TORCH_AVAILABLE, reason="PyTorch is not installed, skipping gradient checks.")
 @pytest.mark.parametrize("op", [
-    "add", "sub", "mul", "div", "pow", "dot", "sum", "mean", "relu", "sigmoid", "tanh"
+    "add", "sub", "mul", "div", "pow", "dot", "sum", "mean", "relu", "sigmoid", "tanh","conv2d", "max_pool2d"
 ])
 def test_gradient_correctness_vs_pytorch(op):
     """Farklı operasyonlar için gradyanların PyTorch sonuçlarıyla eşleştiğini doğrular."""
@@ -85,6 +85,40 @@ def test_gradient_correctness_vs_pytorch(op):
         out_th = a_th.tanh().sum()
     else:
         return
+
+    if op == "conv2d":
+            # Conv2D için uygun tensörler
+            x_az = Tensor(np.random.randn(2, 3, 10, 10), requires_grad=True)
+            w_az = Tensor(np.random.randn(4, 3, 3, 3), requires_grad=True)
+            b_az = Tensor(np.random.randn(4), requires_grad=True)
+            
+            x_th = torch.tensor(x_az.data, requires_grad=True)
+            w_th = torch.tensor(w_az.data, requires_grad=True)
+            b_th = torch.tensor(b_az.data, requires_grad=True)
+            
+            out_az = x_az.conv2d(w_az, b_az).sum()
+            out_th = torch.nn.functional.conv2d(x_th, w_th, b_th, stride=1, padding=1).sum()
+            
+            out_az.backward()
+            out_th.backward()
+            
+            assert np.allclose(x_az.grad, x_th.grad.numpy(), atol=1e-5)
+            assert np.allclose(w_az.grad, w_th.grad.numpy(), atol=1e-5)
+            assert np.allclose(b_az.grad, b_th.grad.numpy(), atol=1e-5)
+            return # Bu test bitti, diğerlerini atla
+            
+        elif op == "max_pool2d":
+            x_az = Tensor(np.random.randn(2, 3, 10, 10), requires_grad=True)
+            x_th = torch.tensor(x_az.data, requires_grad=True)
+            
+            out_az = x_az.max_pool2d(kernel_size=2, stride=2).sum()
+            out_th = torch.nn.functional.max_pool2d(x_th, kernel_size=2, stride=2).sum()
+            
+            out_az.backward()
+            out_th.backward()
+            
+            assert np.allclose(x_az.grad, x_th.grad.numpy(), atol=1e-5)
+            return # Bu test bitti
 
     # Geriye yayılım
     out_az.backward()
