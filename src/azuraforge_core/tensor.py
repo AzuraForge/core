@@ -52,6 +52,7 @@ def im2col_indices(x, field_height, field_width, padding=1, stride=1):
     return cols
 
 class Tensor:
+    # ... (__init__ ve diğer metodlar aynı kalıyor) ...
     def __init__(self, data: Any, _children: Tuple["Tensor", ...] = (), _op: str = "", requires_grad: bool = False):
         if isinstance(data, Tensor): self.data = data.data.copy()
         else: 
@@ -60,14 +61,18 @@ class Tensor:
             except Exception as e:
                 logger.error(f"Error transferring data to device '{DEVICE}': {e}. Falling back to CPU.")
                 self.data = np.array(data, dtype=np.float32)
-
         self.requires_grad = requires_grad
         self.grad: Optional[ArrayType] = xp.zeros_like(self.data) if requires_grad else None
         self._backward: Callable[[], None] = _empty_backward_op
         self._prev: Set["Tensor"] = set(_children)
         self._op: str = _op
 
-    def backward(self, grad_output: Optional[ArrayType] = None) -> None:
+    def __getitem__(self, indices) -> "Tensor":
+        """Dizi indeksleme (slicing, integer array indexing) için kullanılır."""
+        out_data = self.data[indices]
+        out = Tensor(out_data, _children=(self,), _op=f"[{indices}]", requires_grad=self.requires_grad)
+   
+   def backward(self, grad_output: Optional[ArrayType] = None) -> None:
         if not self.requires_grad: return
         topo: List[Tensor] = []
         visited: Set[Tensor] = set()
@@ -196,7 +201,6 @@ class Tensor:
         
         # Şimdilik sadece forward pass, backward daha sonra eklenecek
         return Tensor(out, _children=(self,), _op="max_pool2d")
-
     def __repr__(self): return f"Tensor(data={self.data}, requires_grad={self.requires_grad})"
     def __neg__(self): return self * -1
     def __sub__(self, other): return self + (-other)
