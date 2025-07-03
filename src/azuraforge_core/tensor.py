@@ -28,16 +28,38 @@ ScalarType = Union[int, float, bool, np.number, xp.number]
 
 def _empty_backward_op() -> None: pass
 
+def get_im2col_indices(x_shape, field_height, field_width, padding=1, stride=1):
+    N, C, H, W = x_shape
+    out_height = (H + 2 * padding - field_height) // stride + 1
+    out_width = (W + 2 * padding - field_width) // stride + 1
+    i0 = xp.repeat(xp.arange(field_height), field_width)
+    i0 = xp.tile(i0, C)
+    i1 = stride * xp.repeat(xp.arange(out_height), out_width)
+    j0 = xp.tile(xp.arange(field_width), field_height * C)
+    j1 = stride * xp.tile(xp.arange(out_width), out_height)
+    i = i0.reshape(-1, 1) + i1.reshape(1, -1)
+    j = j0.reshape(-1, 1) + j1.reshape(1, -1)
+    k = xp.repeat(xp.arange(C), field_height * field_width).reshape(-1, 1)
+    return (k, i, j)
+
+def im2col_indices(x, field_height, field_width, padding=1, stride=1):
+    p = padding
+    x_padded = xp.pad(x, ((0, 0), (0, 0), (p, p), (p, p)), mode='constant')
+    k, i, j = get_im2col_indices(x.shape, field_height, field_width, padding, stride)
+    cols = x_padded[:, k, i, j]
+    C = x.shape[1]
+    cols = cols.transpose(1, 2, 0).reshape(field_height * field_width * C, -1)
+    return cols
+
 class Tensor:
     def __init__(self, data: Any, _children: Tuple["Tensor", ...] = (), _op: str = "", requires_grad: bool = False):
         if isinstance(data, Tensor): self.data = data.data.copy()
         else: 
             try:
-                # KRİTİK DÜZELTME: Veri tipini xp.float32 olarak ayarlayın ve xp.array kullanın.
-                self.data = xp.array(data, dtype=xp.float32) # <--- BU SATIR DEĞİŞTİ!
+                self.data = xp.array(data, dtype=xp.float32)
             except Exception as e:
                 logger.error(f"Error transferring data to device '{DEVICE}': {e}. Falling back to CPU.")
-                self.data = np.array(data, dtype=np.float32) # <--- CPU'ya dönüşte de float32 kullanın
+                self.data = np.array(data, dtype=np.float32)
 
         self.requires_grad = requires_grad
         self.grad: Optional[ArrayType] = xp.zeros_like(self.data) if requires_grad else None
@@ -54,12 +76,8 @@ class Tensor:
                 visited.add(v); [build_topo(child) for child in v._prev]; topo.append(v)
         build_topo(self)
         for t in topo:
-            if t.grad is not None:
-                t.grad.fill(0.0)
-        
-        # KRİTİK DÜZELTME: grad_output'u da xp.float32 olarak kabul edin
-        self.grad = xp.ones_like(self.data) if grad_output is None else xp.asarray(grad_output, dtype=xp.float32).reshape(self.data.shape) # <--- BU SATIR DEĞİŞTİ!
-        
+            if t.grad is not None: t.grad.fill(0.0)
+        self.grad = xp.ones_like(self.data) if grad_output is None else xp.asarray(grad_output, dtype=xp.float32).reshape(self.data.shape)
         for v in reversed(topo):
             v._backward()
 
@@ -106,8 +124,7 @@ class Tensor:
         def _backward(_axis=axis, _keepdims=keepdims):
             if self.requires_grad and self.grad is not None:
                 grad_val = out.grad
-                if _axis is not None and not _keepdims:
-                    grad_val = xp.expand_dims(grad_val, axis=_axis)
+                if _axis is not None and not _keepdims: grad_val = xp.expand_dims(grad_val, axis=_axis)
                 self.grad += xp.ones_like(self.data) * grad_val
         out._backward = _backward
         return out
@@ -136,11 +153,50 @@ class Tensor:
         t = xp.tanh(self.data)
         out = Tensor(t, (self,), "Tanh", self.requires_grad)
         def _backward():
-            if self.requires_grad and self.grad is not None:
-                self.grad += (1 - t**2) * out.grad
+            if self.requires_grad and self.grad is not None: self.grad += (1 - t**2) * out.grad
         out._backward = _backward
         return out
         
+    def sqrt(self) -> "Tensor":
+        out = Tensor(xp.sqrt(self.data), (self,), "sqrt", self.requires_grad)
+        def _backward():
+            if self.requires_grad and self.grad is not None: self.grad += (0.5 / xp.sqrt(self.data)) * out.grad
+        out._backward = _backward
+        return out
+
+    def conv2d(self, weights: "Tensor", bias: "Tensor", stride: int = 1, padding: int = 1) -> "Tensor":
+        N, C, H, W = self.data.shape
+        F, _, HH, WW = weights.data.shape
+        H_out = (H + 2 * padding - HH) // stride + 1
+        W_out = (W + 2 * padding - WW) // stride + 1
+        x_col = im2col_indices(self.data, HH, WW, padding, stride)
+        w_row = weights.data.reshape(F, -1)
+        out = w_row @ x_col + bias.data.reshape(-1, 1)
+        out = out.reshape(F, H_out, W_out, N)
+        out = out.transpose(3, 0, 1, 2)
+        return Tensor(out, _children=(self, weights, bias), _op="conv2d")
+        
+    def max_pool2d(self, kernel_size: int = 2, stride: int = 2) -> "Tensor":
+        """2D Maksimum Havuzlama (Max Pooling) operasyonu."""
+        N, C, H, W = self.data.shape
+        HH, WW = kernel_size, kernel_size
+        
+        H_out = (H - HH) // stride + 1
+        W_out = (W - WW) // stride + 1
+
+        x_reshaped = self.data.reshape(N * C, 1, H, W)
+        x_col = im2col_indices(x_reshaped, HH, WW, padding=0, stride=stride)
+        
+        # Her bir penceredeki maksimum değeri bul
+        out = xp.max(x_col, axis=0)
+        
+        # Çıktıyı doğru şekle getir
+        out = out.reshape(H_out, W_out, N, C)
+        out = out.transpose(2, 3, 0, 1)
+        
+        # Şimdilik sadece forward pass, backward daha sonra eklenecek
+        return Tensor(out, _children=(self,), _op="max_pool2d")
+
     def __repr__(self): return f"Tensor(data={self.data}, requires_grad={self.requires_grad})"
     def __neg__(self): return self * -1
     def __sub__(self, other): return self + (-other)
@@ -150,32 +206,13 @@ class Tensor:
     def __rsub__(self, other): return _ensure_tensor(other) - self
     def __rtruediv__(self, other): return _ensure_tensor(other) / self
 
-    def sqrt(self) -> "Tensor":
-        out = Tensor(xp.sqrt(self.data), (self,), "sqrt", self.requires_grad)
-        def _backward():
-            if self.requires_grad and self.grad is not None:
-                # Derivative of sqrt(x) is 1 / (2 * sqrt(x))
-                self.grad += (0.5 / xp.sqrt(self.data)) * out.grad
-        out._backward = _backward
-        return out
-        
 def _ensure_tensor(val: Any) -> "Tensor":
     return val if isinstance(val, Tensor) else Tensor(val)
 
 def _unbroadcast_to(target_shape: Tuple[int, ...], grad: ArrayType) -> ArrayType:
-    if target_shape == grad.shape:
-        return grad
-    
+    if target_shape == grad.shape: return grad
     ndim_diff = grad.ndim - len(target_shape)
-    if ndim_diff > 0:
-        grad = grad.sum(axis=tuple(range(ndim_diff)))
-
-    axes_to_sum = []
-    for i, dim in enumerate(target_shape):
-        if dim == 1 and grad.shape[i] > 1:
-            axes_to_sum.append(i)
-    
-    if axes_to_sum:
-        grad = grad.sum(axis=tuple(axes_to_sum), keepdims=True)
-        
+    if ndim_diff > 0: grad = grad.sum(axis=tuple(range(ndim_diff)))
+    axes_to_sum = [i for i, dim in enumerate(target_shape) if dim == 1 and grad.shape[i] > 1]
+    if axes_to_sum: grad = grad.sum(axis=tuple(axes_to_sum), keepdims=True)
     return grad
