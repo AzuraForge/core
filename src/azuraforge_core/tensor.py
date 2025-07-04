@@ -6,18 +6,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 DEVICE = os.environ.get("AZURAFORGE_DEVICE", "cpu").lower()
-
 xp: Any
+
 if DEVICE == "gpu":
     try:
         import cupy
         xp = cupy
         logger.info("✅ AzuraForge Core: CuPy (GPU) backend successfully loaded.")
-    except ImportError:
-        import numpy
-        xp = numpy
-        logger.warning("⚠️ AzuraForge Core: AZURAFORGE_DEVICE set to 'gpu' but CuPy not found. Falling back to NumPy (CPU).")
-        DEVICE = "cpu"
+    except ImportError as e:
+        logger.error("⚠️ CRITICAL: AZURAFORGE_DEVICE set to 'gpu' but CuPy could not be imported. GPU acceleration is NOT available.")
+        # GPU istenmiş ama bulunamamışsa, sessizce devam etmek yerine hata fırlat.
+        # Bu, konfigürasyon hatalarını anında fark etmeyi sağlar.
+        raise ImportError("CuPy library not found, but AZURAFORGE_DEVICE is set to 'gpu'. Please install CuPy or set device to 'cpu'.") from e
 else:
     import numpy
     xp = numpy
@@ -64,7 +64,7 @@ def col2im_indices(cols, x_shape, field_height=3, field_width=3, padding=1, stri
     return x_padded[:, :, padding:-padding, padding:-padding]
     
 class Tensor:
-    # ... (__init__ ve diğer metodlar aynı kalıyor) ...
+    # ... (Geri kalan tüm Tensor metotları aynı, değişiklik yok) ...
     def __init__(self, data: Any, _children: Tuple["Tensor", ...] = (), _op: str = "", requires_grad: bool = False):
         if isinstance(data, Tensor): self.data = data.data.copy()
         else: 
@@ -261,8 +261,6 @@ class Tensor:
         def _backward():
             if self.requires_grad and self.grad is not None:
                 # Gradyanın transpose'u, orijinal transpose'un tersidir.
-                # Örn: (0, 2, 1) -> (0, 2, 1)
-                # Orijinal sırayı bulmak için bir argüman sıralaması gerekir.
                 inv_dims = np.argsort(dims)
                 self.grad += out.grad.transpose(*inv_dims)
         
@@ -271,15 +269,12 @@ class Tensor:
 
     def softmax(self, axis=-1) -> "Tensor":
         """Softmax aktivasyon fonksiyonu."""
-        # Sayısal stabilite için en büyük değer çıkarılır
         e_x = xp.exp(self.data - xp.max(self.data, axis=axis, keepdims=True))
         out_data = e_x / xp.sum(e_x, axis=axis, keepdims=True)
         out = Tensor(out_data, _children=(self,), _op="softmax", requires_grad=self.requires_grad)
 
         def _backward():
             if self.requires_grad and self.grad is not None:
-                # Softmax'in gradyanı: s(x) * (grad - (grad . s(x)))
-                # Bu, jacobian matrisinin gradyan vektörüyle çarpımının basitleştirilmiş halidir.
                 s = out.data
                 grad_s = out.grad
                 self.grad += s * (grad_s - xp.sum(grad_s * s, axis=axis, keepdims=True))
@@ -287,11 +282,8 @@ class Tensor:
         out._backward = _backward
         return out
 
-# Tensor sınıfının içindeyiz...
-
     def log_softmax(self, axis=-1) -> "Tensor":
         """LogSoftmax işlemini uygular."""
-        # Sayısal stabilite için
         max_val = self.data.max(axis=axis, keepdims=True)
         log_sum_exp = xp.log(xp.sum(xp.exp(self.data - max_val), axis=axis, keepdims=True))
         out_data = self.data - max_val - log_sum_exp
@@ -299,7 +291,6 @@ class Tensor:
 
         def _backward():
             if self.requires_grad and self.grad is not None:
-                # Gradyan: grad - softmax(x) * sum(grad)
                 softmax_val = xp.exp(out.data)
                 self.grad += out.grad - softmax_val * xp.sum(out.grad, axis=axis, keepdims=True)
         
@@ -307,35 +298,15 @@ class Tensor:
         return out
 
     def nll_loss(self, targets: "Tensor") -> "Tensor":
-        """
-        Negative Log Likelihood Loss'u hesaplar.
-        Girdi (self) log olasılıkları olmalıdır.
-        Hedefler (targets) sınıf indeksleri olmalıdır.
-        """
         num_samples = targets.data.shape[0]
-        # Hedef indekslerdeki log olasılıklarını seç
         selected_log_probs = self[range(num_samples), targets.data.astype(xp.int32)]
-        # Kaybı hesapla (negatif ortalama)
         out = -selected_log_probs.sum() * (1.0 / num_samples)
-        # _children'a targets'ı eklemeye gerek yok, çünkü gradyanı ona akmıyor.
         out._children = (self,) 
         out._op = "nll_loss"
         
-        # Geri yayılım, __getitem__ tarafından zaten hallediliyor.
-        # Sadece gradyanı doğru şekilde ölçeklendirmemiz gerekiyor.
-        def _backward():
-            if self.requires_grad and self.grad is not None:
-                grad_val = xp.zeros_like(self.data)
-                grad_to_distribute = -out.grad / num_samples
-                # `xp.add.at` yerine doğrudan atama yapabiliriz, çünkü __getitem__'in _backward'ı bunu yapacak.
-                # Ancak, gradyanı `out`'tan `selected_log_probs`'a manuel olarak aktarmamız gerekiyor.
-                selected_log_probs.grad = xp.full_like(selected_log_probs.data, grad_to_distribute)
-                selected_log_probs._backward()
-
-        # Bu, daha basit bir yaklaşımdır. __getitem__'in gradyanını tetikler.
         selected_log_probs.backward(grad_output=xp.full_like(selected_log_probs.data, -1.0/num_samples))
-        out.grad = out.grad # Sadece bir yer tutucu
-        self.grad += selected_log_probs.grad # Gradyanı ana tensöre kopyala
+        out.grad = out.grad 
+        self.grad += selected_log_probs.grad 
 
         return out
                 
