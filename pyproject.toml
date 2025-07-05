@@ -16,7 +16,17 @@ classifiers = ["Programming Language :: Python :: 3"]
 dependencies = ["numpy", "python-semantic-release"]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = [
+    "pytest",
+    "flake8", # <-- YENİ
+    "torch"   # <-- YENİ (Testler için)
+]
+
+# YENİ BÖLÜM
+[tool.pytest.ini_options]
+testpaths = [
+    "tests",
+]
 
 [tool.semantic_release]
 branch = "main"
