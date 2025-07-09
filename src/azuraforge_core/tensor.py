@@ -15,8 +15,6 @@ if DEVICE == "gpu":
         logger.info("✅ AzuraForge Core: CuPy (GPU) backend successfully loaded.")
     except ImportError as e:
         logger.error("⚠️ CRITICAL: AZURAFORGE_DEVICE set to 'gpu' but CuPy could not be imported. GPU acceleration is NOT available.")
-        # GPU istenmiş ama bulunamamışsa, sessizce devam etmek yerine hata fırlat.
-        # Bu, konfigürasyon hatalarını anında fark etmeyi sağlar.
         raise ImportError("CuPy library not found, but AZURAFORGE_DEVICE is set to 'gpu'. Please install CuPy or set device to 'cpu'.") from e
 else:
     import numpy
@@ -28,6 +26,7 @@ ScalarType = Union[int, float, bool, np.number, xp.number]
 
 def _empty_backward_op() -> None: pass
 
+# ... (im2col, col2im fonksiyonları aynı kalıyor) ...
 def get_im2col_indices(x_shape, field_height, field_width, padding=1, stride=1):
     N, C, H, W = x_shape
     out_height = (H + 2 * padding - field_height) // stride + 1
@@ -52,7 +51,6 @@ def im2col_indices(x, field_height, field_width, padding=1, stride=1):
     return cols
 
 def col2im_indices(cols, x_shape, field_height=3, field_width=3, padding=1, stride=1):
-    """im2col işleminin tersini uygular."""
     N, C, H, W = x_shape
     H_padded, W_padded = H + 2 * padding, W + 2 * padding
     x_padded = xp.zeros((N, C, H_padded, W_padded), dtype=cols.dtype)
@@ -62,9 +60,9 @@ def col2im_indices(cols, x_shape, field_height=3, field_width=3, padding=1, stri
     xp.add.at(x_padded, (slice(None), k, i, j), cols_reshaped)
     if padding == 0: return x_padded
     return x_padded[:, :, padding:-padding, padding:-padding]
-    
+
 class Tensor:
-    # ... (Geri kalan tüm Tensor metotları aynı, değişiklik yok) ...
+    # ... (__init__, backward, to_cpu, __getitem__, __add__, __mul__, __pow__, dot, sum, mean, relu, sigmoid, tanh, sqrt, conv2d, max_pool2d, __repr__ ve diğerleri aynı kalıyor) ...
     def __init__(self, data: Any, _children: Tuple["Tensor", ...] = (), _op: str = "", requires_grad: bool = False):
         if isinstance(data, Tensor): self.data = data.data.copy()
         else: 
@@ -200,20 +198,15 @@ class Tensor:
 
         def _backward():
             if not out.requires_grad or out.grad is None: return
-
-            if bias.requires_grad and bias.grad is not None:
-                bias.grad += xp.sum(out.grad, axis=(0, 2, 3))
-
+            if bias.requires_grad and bias.grad is not None: bias.grad += xp.sum(out.grad, axis=(0, 2, 3))
             if weights.requires_grad and weights.grad is not None:
                 db_reshaped = out.grad.transpose(1, 2, 3, 0).reshape(F, -1)
                 dw = db_reshaped @ x_col.T
                 weights.grad += dw.reshape(weights.data.shape)
-
             if self.requires_grad and self.grad is not None:
                 dout_reshaped = out.grad.transpose(1, 2, 3, 0).reshape(F, -1)
                 dx_col = w_row.T @ dout_reshaped
                 self.grad += col2im_indices(dx_col, self.data.shape, HH, WW, padding, stride)
-
         out._backward = _backward
         return out
         
@@ -222,26 +215,19 @@ class Tensor:
         HH, WW = kernel_size, kernel_size
         H_out = (H - HH) // stride + 1
         W_out = (W - WW) // stride + 1
-
         x_reshaped = self.data.reshape(N * C, 1, H, W)
         x_col = im2col_indices(x_reshaped, HH, WW, padding=0, stride=stride)
-        
         out_data = xp.max(x_col, axis=0)
         out_data = out_data.reshape(H_out, W_out, N, C).transpose(2, 3, 0, 1)
-        
         out = Tensor(out_data, _children=(self,), _op="max_pool2d", requires_grad=self.requires_grad)
-
         def _backward():
             if not out.requires_grad or out.grad is None: return
-            
             x_col_max_val_indices = xp.argmax(x_col, axis=0)
             dx_col = xp.zeros_like(x_col)
             dout_flat = out.grad.transpose(2, 3, 0, 1).ravel()
             dx_col[x_col_max_val_indices, range(dout_flat.size)] = dout_flat
-            
             dx = col2im_indices(dx_col, x_reshaped.shape, HH, WW, padding=0, stride=stride)
             self.grad += dx.reshape(self.data.shape)
-
         out._backward = _backward
         return out
         
@@ -255,61 +241,70 @@ class Tensor:
     def __rtruediv__(self, other): return _ensure_tensor(other) / self
 
     def transpose(self, *dims) -> "Tensor":
-        """Tensörün boyutlarını yeniden sıralar (transpose)."""
         out = Tensor(self.data.transpose(*dims), _children=(self,), _op=f"T{dims}", requires_grad=self.requires_grad)
-        
         def _backward():
             if self.requires_grad and self.grad is not None:
-                # Gradyanın transpose'u, orijinal transpose'un tersidir.
                 inv_dims = np.argsort(dims)
                 self.grad += out.grad.transpose(*inv_dims)
-        
-        out._backward = _backward
-        return out
-
-    def softmax(self, axis=-1) -> "Tensor":
-        """Softmax aktivasyon fonksiyonu."""
-        e_x = xp.exp(self.data - xp.max(self.data, axis=axis, keepdims=True))
-        out_data = e_x / xp.sum(e_x, axis=axis, keepdims=True)
-        out = Tensor(out_data, _children=(self,), _op="softmax", requires_grad=self.requires_grad)
-
-        def _backward():
-            if self.requires_grad and self.grad is not None:
-                s = out.data
-                grad_s = out.grad
-                self.grad += s * (grad_s - xp.sum(grad_s * s, axis=axis, keepdims=True))
-
         out._backward = _backward
         return out
 
     def log_softmax(self, axis=-1) -> "Tensor":
-        """LogSoftmax işlemini uygular."""
         max_val = self.data.max(axis=axis, keepdims=True)
-        log_sum_exp = xp.log(xp.sum(xp.exp(self.data - max_val), axis=axis, keepdims=True))
-        out_data = self.data - max_val - log_sum_exp
+        stable_logits = self.data - max_val
+        log_sum_exp = xp.log(xp.sum(xp.exp(stable_logits), axis=axis, keepdims=True))
+        out_data = stable_logits - log_sum_exp
         out = Tensor(out_data, _children=(self,), _op="log_softmax", requires_grad=self.requires_grad)
 
         def _backward():
             if self.requires_grad and self.grad is not None:
-                softmax_val = xp.exp(out.data)
-                self.grad += out.grad - softmax_val * xp.sum(out.grad, axis=axis, keepdims=True)
+                softmax_probs = xp.exp(out.data)
+                self.grad += out.grad - softmax_probs * xp.sum(out.grad, axis=axis, keepdims=True)
         
         out._backward = _backward
         return out
 
+    # === YENİ VE İYİLEŞTİRİLMİŞ NLL_LOSS ===
     def nll_loss(self, targets: "Tensor") -> "Tensor":
-        num_samples = targets.data.shape[0]
-        selected_log_probs = self[range(num_samples), targets.data.astype(xp.int32)]
-        out = -selected_log_probs.sum() * (1.0 / num_samples)
-        out._children = (self,) 
-        out._op = "nll_loss"
+        """
+        Negative Log-Likelihood Loss. Genellikle log_softmax'tan sonra kullanılır.
+        Hem 2D hem de 3D tensörleri destekler.
+        """
+        log_probs_data = self.data
+        targets_data = targets.data.astype(xp.int32)
         
-        selected_log_probs.backward(grad_output=xp.full_like(selected_log_probs.data, -1.0/num_samples))
-        out.grad = out.grad 
-        self.grad += selected_log_probs.grad 
+        if log_probs_data.ndim == 3: # (N, T, C) durumu
+            N, T, C = log_probs_data.shape
+            log_probs_flat = log_probs_data.reshape(N * T, C)
+            targets_flat = targets_data.reshape(N * T)
+            num_samples = N * T
+        elif log_probs_data.ndim == 2: # (N, C) durumu
+            N, C = log_probs_data.shape
+            log_probs_flat = log_probs_data
+            targets_flat = targets_data
+            num_samples = N
+        else:
+            raise ValueError(f"nll_loss için 2D veya 3D girdi bekleniyor, {log_probs_data.ndim}D मिला.")
 
+        # Doğru etiketlerin log olasılıklarını seç
+        selected_log_probs = log_probs_flat[range(num_samples), targets_flat]
+        
+        # Ortalama kaybı hesapla
+        out_data = -selected_log_probs.sum() / num_samples
+        out = Tensor(out_data, _children=(self,), _op="nll_loss", requires_grad=self.requires_grad)
+
+        def _backward():
+            if self.requires_grad and self.grad is not None:
+                # Gradyan matrisini oluştur (çoğunlukla sıfır)
+                grad_flat = xp.zeros_like(log_probs_flat)
+                # Sadece doğru etiketlerin olduğu yerlere gradyanı ata
+                grad_flat[range(num_samples), targets_flat] = -1.0 / num_samples
+                # Orijinal şekle geri getir
+                self.grad += grad_flat.reshape(self.data.shape) * out.grad
+        
+        out._backward = _backward
         return out
-                
+
 def _ensure_tensor(val: Any) -> "Tensor":
     return val if isinstance(val, Tensor) else Tensor(val)
 
